@@ -83,8 +83,8 @@ contract FourPlayerGameLobby {
         emit NewGame(msg.sender, _playerCount, _cost);
     }
 
-    ///
-    @notice Checks if last slot of player is taken and joins the game.Uses funds from Balance.function JoinLobby(uint256 _id) public {
+    /// @notice Checks if last slot of player is taken and joins the game.Uses funds from Balance.
+    function JoinLobby(uint256 _id) public {
         require(gameLobbies[_id].isFull==false, "The game is full");
         require(Balance[msg.sender] >=gameLobbies[_id].cost * Eth,
             "You don't have enough funds deposited"
