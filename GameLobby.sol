@@ -8,12 +8,12 @@ pragma solidity >= 0.7 .0 < 0.9 .0;
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract NFT is ERC721Enumerable,
+contract BallisticFreaksNFT is ERC721Enumerable,
 Ownable {
-    event ReferralMint(uint256, address indexed);
-
     using Strings
     for uint256;
+
+    event ReferralMint(address indexed, uint);
 
     string public baseURI;
     string public notRevealedUri;
@@ -96,7 +96,8 @@ Ownable {
             if (referralCodeIsTaken[_code] == true) {
                 require(ownerOfCode[_code] != msg.sender, "You can't referr yoursef");
                 require(msg.value >= (referralCost * _mintAmount), "ReferralMint: Not enough ether");
-                emit ReferralMint(_mintAmount, ownerOfCode[_code]);
+                addressesReferred[ownerOfCode[_code]] +1;
+                emit ReferralMint(ownerOfCode[_code], _mintAmount);
             } else {
                 require(msg.value >= cost * _mintAmount, "MintWithoutReferral: Not enough ether");
             }
