@@ -1,225 +1,189 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.0;
+pragma solidity >= 0.7 .0 < 0.9 .0;
 
-/// @title FourPlayerGameLobby
-/// @author Burtininkas69
-/// @dev Creates lobby structure for game up to 4 players
+/// @title BallisticFreaks contract
+/// @author Gustas K (ballisticfreaks@gmail.com)
 
-contract FourPlayerGameLobby {
-    event NewGame(address indexed, uint256, uint256);
-    event JoinedGame(address indexed, uint256);
-    event Winner(address indexed, uint256);
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-    address nullAddress = 0x0000000000000000000000000000000000000000;
-    address admin;
+contract NFT is ERC721Enumerable,
+Ownable {
+    event ReferralMint(uint256, address indexed);
 
-    /// @notice Percentage of each game goes to seperate pool for top players and dev team.
-    uint8 monthlyPoolPct = 6;
-    uint8 devWalletPct = 4;
+    using Strings
+    for uint256;
 
-    /// @notice Ether is used in creating game price. It let's user type value in ether, not wei.
-    /// @dev This limits game floor price to 1 ether.
-    uint256 Eth = 1 ether;
-    uint256 public devWallet;
-    uint256 public monthlyPool;
-    uint256 numberOfPlayers;
+    string public baseURI;
+    string public notRevealedUri;
+    string public baseExtension = ".json";
 
-    /// @dev Array used to get all players addresses to add to leaderboard.
-    address[] public allPlayers;
+    /// @notice edit these before launching contract
+    /// @dev only ReferralRewardPercentage & costToCreateReferral is editable
+    uint8 public referralRewardPercentage = 50;
+    uint256 public cost = 2 ether;
+    uint256 public whitelistedCost = 1 ether;
+    uint256 public referralCost = 1 ether;
+    uint256 public costToCreateReferral = 1 ether;
+    uint256 public maxSupply = 10000;
 
-    /// @notice Game Lobby structure, 4 players max. "isFull" detects if last player entered and locks the struct for new
-    struct gameLobby {
-        address player1;
-        address player2;
-        address player3;
-        address player4;
-        address winner;
-        uint8 playerCount;
-        uint256 cost;
-        uint256 livePool;
-        bool isFull;
+    bool public paused = false;
+    bool public revealed = false;
+    bool public frozenURI = false;
+
+    mapping(address => uint) public addressesReferred;
+    mapping(address => bool) public whitelisted;
+    mapping(string => bool) public referralCodeIsTaken;
+    mapping(string => address) internal ownerOfCode;
+
+    constructor(string memory _name,
+        string memory _symbol,
+        string memory _unrevealedURI) ERC721(_name, _symbol) {
+        setUnrevealedURI(_unrevealedURI);
     }
 
-    gameLobby[] public gameLobbies;
-
-    /// @notice Seperate personal balance in contract. Used to pay for creating and joining games.
-    mapping(address => uint256) balance;
-    mapping(address => uint256) public wins;
-    mapping(address => uint256) public losses;
-
-    mapping(address => uint256) public tempWins;
-    mapping(address => uint256) public tempLosses;
-
-    constructor() {
-        admin = msg.sender;
-    }
-
-    modifier isAdmin() {
-        require(msg.sender == admin, "This function is for admin only");
+    modifier notPaused {
+        require(!paused);
         _;
     }
 
-    function MyBalance() public view returns (uint256) {
-        return (balance[msg.sender]);
+    function _baseURI() internal view virtual override returns(string memory) {
+        return baseURI;
     }
 
-    function DepositFunds() public payable {
-        require(msg.value > 0, "There is no point in depositing null ammount");
-        balance[msg.sender] += msg.value;
-        allPlayers.push(msg.sender);
-        numberOfPlayers++;
+    /// @notice removes Whitelist after the users mints
+    function _removeWhitelist(address _address) internal {
+
+        require(whitelisted[_address] == true, "Address is not whitelisted");
+        whitelisted[_address] = false;
     }
 
-    function WithdrawFunds() public {
-        uint256 withdrawableBalance = balance[msg.sender];
-        balance[msg.sender] = 0;
-        payable(msg.sender).transfer(withdrawableBalance);
+    /// @notice Chosen code (string) get's assigned to address. Whenever the code is used in mint, assigned address is paid
+    function createRefferalCode(address _address, string memory _code) public payable notPaused {
+        require(keccak256(abi.encodePacked(_code)) != keccak256(abi.encodePacked("")), "Referral Code can't be empty");
+        require(referralCodeIsTaken[_code] != true, "Referral Code is already taken");
+
+        if (msg.sender != owner()) {
+            require(msg.value >= costToCreateReferral, "Value should be equal or greater than ReferralCost");
+        }
+
+        referralCodeIsTaken[_code] = true;
+        ownerOfCode[_code] = _address;
     }
 
-    /// @notice Seperate withdraw function for admins. Each game will transfer specified % to DevWallet.
-    function WithdrawFundsAdmin() public isAdmin {
-        uint256 withdrawableBalance = devWallet;
-        devWallet = 0;
-        payable(msg.sender).transfer(withdrawableBalance);
+    /// @notice Seperate mint for Whitelisted addresses to not overdue on code complexity. Whitelisted mint allows for only 1 mint
+    /// @dev Whitelist allows only 1 mint. After mint removeWhitelist function is called.
+    function whitelistedMint() public payable notPaused {
+        require(whitelisted[msg.sender], "You are not whitelisted");
+        uint256 supply = totalSupply();
+        require(supply + 1 <= maxSupply);
+        require(msg.value >= whitelistedCost);
+        _removeWhitelist(msg.sender);
+        _safeMint(msg.sender, supply + 1);
+
     }
 
-    /// @notice Creates new game with specified cost and player count. Uses funds from Balance.
-    function CreateLobby(uint8 _playerCount, uint256 _cost) public {
-        require(
-            balance[msg.sender] >= _cost * Eth,
-            "You don't have enough funds deposited"
-        );
-        require(
-            _playerCount > 1 && _playerCount <= 4,
-            "You can only have 2, 3 or 4 players"
-        );
-        gameLobby memory newLobby = gameLobby(
-            msg.sender,
-            nullAddress,
-            nullAddress,
-            nullAddress,
-            nullAddress,
-            _playerCount,
-            _cost,
-            _cost * Eth,
-            false
-        );
-        gameLobbies.push(newLobby);
-        balance[msg.sender] -= _cost * Eth;
-        emit NewGame(msg.sender, _playerCount, _cost);
-    }
+    /// @notice mint function with referral code to give user discount and pay referral
+    /// @dev function has an extra input - string. It is used for referral code. If the user does not put any code string looks like this "".
+    function mint(address _to, uint256 _mintAmount, string memory _code) public payable notPaused {
+        uint256 supply = totalSupply();
+        require(_mintAmount > 0);
+        require(supply + _mintAmount <= maxSupply);
+        require(referralCodeIsTaken[_code] == true || keccak256(abi.encodePacked(_code)) == keccak256(abi.encodePacked("")), "Referral not valid, find a valid code or leave the string empty ");
 
-    /// @notice Checks if last slot of player is taken and joins the game.Uses funds from Balance.
-    function JoinLobby(uint256 _id) public {
-        require(gameLobbies[_id].isFull == false, "The game is full");
-        require(
-            balance[msg.sender] >= gameLobbies[_id].cost * Eth,
-            "You don't have enough funds deposited"
-        );
-        balance[msg.sender] -= gameLobbies[_id].cost * Eth;
-        uint256 lobbyPlayerCount = gameLobbies[_id].playerCount;
-        gameLobbies[_id].livePool += gameLobbies[_id].cost * Eth;
-
-        if (lobbyPlayerCount == 4) {
-            if (gameLobbies[_id].player3 != nullAddress) {
-                gameLobbies[_id].player4 = msg.sender;
-                gameLobbies[_id].isFull = true;
-            } else if (gameLobbies[_id].player2 != nullAddress) {
-                gameLobbies[_id].player3 = msg.sender;
+        if (msg.sender != owner()) {
+            if (referralCodeIsTaken[_code] == true) {
+                require(ownerOfCode[_code] != msg.sender, "You can't referr yoursef");
+                require(msg.value >= (referralCost * _mintAmount), "ReferralMint: Not enough ether");
+                emit ReferralMint(_mintAmount, ownerOfCode[_code]);
             } else {
-                gameLobbies[_id].player2 = msg.sender;
+                require(msg.value >= cost * _mintAmount, "MintWithoutReferral: Not enough ether");
             }
-        } else if (lobbyPlayerCount == 3) {
-            if (gameLobbies[_id].player2 != nullAddress) {
-                gameLobbies[_id].player3 = msg.sender;
-                gameLobbies[_id].isFull = true;
-            } else {
-                gameLobbies[_id].player2 = msg.sender;
+        }
+
+        for (uint256 i = 1; i <= _mintAmount; i++) {
+            _safeMint(_to, supply + i);
+        }
+
+        if (referralCodeIsTaken[_code] == true) {
+            payable(ownerOfCode[_code]).transfer(msg.value / 100 * referralRewardPercentage);
+        }
+    }
+
+    function walletOfOwner(address _owner) public view returns(uint256[] memory) {
+        uint256 ownerTokenCount = balanceOf(_owner);
+        uint256[] memory tokenIds = new uint256[](ownerTokenCount);
+
+        for (uint256 i; i < ownerTokenCount; i++) {
+            tokenIds[i] = tokenOfOwnerByIndex(_owner, i);
+        }
+
+        return tokenIds;
+    }
+
+    function tokenURI(uint256 tokenId) public view virtual override returns(string memory) {
+        require(_exists(tokenId),
+            "ERC721Metadata: URI query for nonexistent token"
+        );
+
+        if(revealed == false) {
+            return notRevealedUri;
+        }
+
+        string memory currentBaseURI = _baseURI();
+        return bytes(currentBaseURI).length > 0 ? string(abi.encodePacked(currentBaseURI, tokenId.toString(), baseExtension)) : "";
+    }
+
+    //only owner
+
+    function changeReferralReward(uint8 _percentage) public onlyOwner {
+        require(_percentage <= 100);
+        referralRewardPercentage = _percentage;
+    }
+
+    function changeReferralCost(uint _cost) public onlyOwner {
+        costToCreateReferral = _cost;
+    }
+
+    function setWhitelist(address _address) public onlyOwner {
+
+        require(whitelisted[_address] == false, "Address is whitelisted");
+        whitelisted[_address] = true;
+    }
+
+    function freezeURI() public onlyOwner {
+        frozenURI = true;
+    }
+
+    function setBaseURI(string memory _newBaseURI) public onlyOwner {
+        require(!frozenURI, "URI is frozen");
+        baseURI = _newBaseURI;
+    }
+
+    function setUnrevealedURI(string memory _unrevealedURI) public onlyOwner {
+        require(!frozenURI, "URI is frozen");
+        notRevealedUri = _unrevealedURI;
+    }
+
+    function setBaseExtension(string memory _newBaseExtension) public onlyOwner {
+        baseExtension = _newBaseExtension;
+    }
+
+    function reveal() public onlyOwner {
+        revealed = true;
+    }
+
+    function pause(bool _state) public onlyOwner {
+        paused = _state;
+    }
+
+
+    function withdraw() public payable onlyOwner {
+        (bool os, ) = payable(owner()).call {
+                value: address(this).balance
             }
-        } else {
-            gameLobbies[_id].player2 = msg.sender;
-            gameLobbies[_id].isFull = true;
-        }
-
-        emit JoinedGame(msg.sender, _id);
-    }
-
-    /// @notice Distributes funds to specific balances in contract.
-    function SendFundsToWinner(uint256 _id) internal {
-        uint256 ToMonthlyPool = (gameLobbies[_id].livePool / 100) *
-            monthlyPoolPct;
-        uint256 ToDevWallet = (gameLobbies[_id].livePool / 100) * devWalletPct;
-        gameLobbies[_id].livePool -= (ToMonthlyPool + ToDevWallet);
-        balance[gameLobbies[_id].winner] += gameLobbies[_id].livePool;
-        monthlyPool += ToMonthlyPool;
-        devWallet += ToDevWallet;
-        emit Winner(gameLobbies[_id].winner, gameLobbies[_id].livePool);
-    }
-
-    /// @notice After each game each user will have updated Wins/Losses count.
-    function AddWinsAndLosses(uint256 _id) internal {
-        if (gameLobbies[_id].player1 == gameLobbies[_id].winner) {
-            tempWins[gameLobbies[_id].player1]++;
-            wins[gameLobbies[_id].player1]++;
-        } else {
-            tempLosses[gameLobbies[_id].player1]++;
-            losses[gameLobbies[_id].player1]++;
-        }
-
-        if (gameLobbies[_id].player2 == gameLobbies[_id].winner) {
-            tempWins[gameLobbies[_id].player2]++;
-            wins[gameLobbies[_id].player2]++;
-        } else {
-            tempLosses[gameLobbies[_id].player2]++;
-            losses[gameLobbies[_id].player2]++;
-        }
-
-        if (gameLobbies[_id].player3 == gameLobbies[_id].winner) {
-            tempWins[gameLobbies[_id].player3]++;
-            wins[gameLobbies[_id].player3]++;
-        } else {
-            tempLosses[gameLobbies[_id].player3]++;
-            losses[gameLobbies[_id].player2]++;
-        }
-
-        if (gameLobbies[_id].player4 == gameLobbies[_id].winner) {
-            tempWins[gameLobbies[_id].player4]++;
-            wins[gameLobbies[_id].player3]++;
-        } else {
-            tempLosses[gameLobbies[_id].player4]++;
-            losses[gameLobbies[_id].player2]++;
-        }
-    }
-
-    /// @notice Winner is picked manually.
-    /// @dev Game should be added in front-end. Winner of that game should be transfered to this function.
-    function PickWinner(uint256 _id, uint256 _number) public isAdmin {
-        require(
-            _number >= 1 && _number <= 4,
-            "Winner can be 1st, 2nd, 3rd or 4th player"
-        );
-        require(
-            gameLobbies[_id].winner == nullAddress,
-            "Winner is already picked"
-        );
-        require(gameLobbies[_id].isFull, "Lobby is not full");
-        require(
-            _number <= gameLobbies[_id].playerCount,
-            "Number is higher than the playerCount"
-        );
-
-        if (_number == 4) {
-            gameLobbies[_id].winner = gameLobbies[_id].player4;
-        } else if (_number == 3) {
-            gameLobbies[_id].winner = gameLobbies[_id].player3;
-        } else if (_number == 2) {
-            gameLobbies[_id].winner = gameLobbies[_id].player2;
-        } else {
-            gameLobbies[_id].winner = gameLobbies[_id].player1;
-        }
-
-        AddWinsAndLosses(_id);
-        SendFundsToWinner(_id);
+            ("");
+        require(os);
     }
 }
